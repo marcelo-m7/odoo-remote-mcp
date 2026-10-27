@@ -197,6 +197,17 @@ Cada componente deve ter interfaces testáveis independentemente do transporte M
 
 **Nenhuma destas opções implica autorização para operar instâncias de produção.**
 
+### Revisão de executabilidade (2026-10-27)
+
+Uma revisão independente destacou quatro decisões relevantes. Para reduzir escolhas implícitas, ficam registradas as **recomendações técnicas ainda sujeitas à aprovação de Marcelo**:
+
+- **Primeira entrega:** remoto-first, com OAuth/OIDC funcional antes de expor HTTP, e `stdio` sobre o mesmo núcleo.
+- **Provedor de identidade:** integrar OIDC externo já existente ou selecionado pela implantação; não desenvolver um Authorization Server próprio na v0.1. O provedor concreto será configurável.
+- **Administração inicial:** CLI administrativa autenticada para cadastrar conexões, apontar referências de segredo e definir políticas. `record_delete` ficará totalmente indisponível na v0.1, de forma que não haja dependência de uma UI de aprovação prematura.
+- **Redes internas:** destinos privados bloqueados por padrão. Futuramente admitir exceções explícitas por administradores, limitadas a nomes/endereços previamente autorizados e com proteção contra DNS rebinding, egress control e sem redirecionamentos arbitrários.
+
+Estas escolhas são recomendações de desenho, **não decisões atribuídas ao utilizador**. A implementação do gateway remoto depende de aprovação da especificação e da definição do mecanismo concreto de identidade.
+
 ## 11. Referências primárias
 
 - [Odoo 19 — External JSON-2 API](https://www.odoo.com/documentation/19.0/developer/reference/external_api.html)
