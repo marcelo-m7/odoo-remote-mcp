@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: monynha
+      POSTGRES_DB: monynha_mcp
+      POSTGRES_PASSWORD: ${MONYNHA_DB_PASSWORD:?Set MONYNHA_DB_PASSWORD externally}
+    volumes:
+      - monynha_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monynha -d monynha_mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MONYNHA_MCP_MODE: http
+      MONYNHA_MCP_HTTP_HOST: 0.0.0.0
+      MONYNHA_MCP_HTTP_PORT: 8000
+      MONYNHA_MCP_DATABASE_URL: postgresql+psycopg://monynha:${MONYNHA_DB_PASSWORD}@postgres:5432/monynha_mcp
+      MONYNHA_MCP_PUBLIC_URL: ${MONYNHA_MCP_PUBLIC_URL:?The public HTTPS MCP endpoint is required}
+      MONYNHA_MCP_OIDC_ISSUER: ${MONYNHA_MCP_OIDC_ISSUER:?OIDC issuer is required}
+      MONYNHA_MCP_OIDC_AUDIENCE: ${MONYNHA_MCP_PUBLIC_URL:?OIDC audience must match the resource URL}
+      MONYNHA_MCP_OIDC_JWKS_URL: ${MONYNHA_MCP_OIDC_JWKS_URL:?OIDC JWKS URL is required}
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Inject MONYNHA_ODOO_KEY_* through your deployment secret manager.
+    # Put an HTTPS reverse proxy and OIDC provider in front of the service.
+
+volumes:
+  monynha_pgdata:
