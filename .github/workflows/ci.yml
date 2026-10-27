@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.4"
+          enable-cache: true
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.12
+          uv sync --locked --extra dev
+      - name: Lint
+        run: uv run --locked ruff check .
+      - name: Format
+        run: uv run --locked ruff format --check src tests
+      - name: Type check
+        run: uv run --locked mypy --ignore-missing-imports src/monynha_odoo_mcp
+      - name: Test
+        run: uv run --locked pytest -q
+      - name: Build wheel
+        run: uv build
+      - name: Assert no env files tracked
+        run: |
+          if git ls-files | grep -E '(^|/)(\.env|[^/]+\.env)$'; then
+            echo "A tracked credential file was detected"
+            exit 1
+          fi

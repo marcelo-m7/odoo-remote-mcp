@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "monynha-odoo-mcp"
+version = "0.1.0a0"
+description = "Secure, multi-instance Odoo MCP gateway"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+dependencies = [
+  "mcp>=2.3,<3",
+  "pydantic-settings>=2.16,<3",
+  "httpx==0.28.1",
+  "httpcore==1.0.9",
+  "sqlalchemy>=2.1,<3",
+  "alembic>=1.20,<2",
+  "psycopg[binary]>=3.3,<4",
+  "PyJWT[crypto]>=2.15,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17,<1", "build>=1.6,<2", "mypy>=1.18,<2"]
+
+[project.scripts]
+monynha-odoo-mcp = "monynha_odoo_mcp.server:main"
+monynha-odoo-admin = "monynha_odoo_mcp.admin:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monynha_odoo_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
