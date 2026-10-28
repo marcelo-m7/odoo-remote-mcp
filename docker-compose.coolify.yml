@@ -27,6 +27,12 @@ services:
       MONYNHA_MCP_OIDC_ISSUER: ${MONYNHA_MCP_OIDC_ISSUER:?Set the OIDC issuer URL}
       MONYNHA_MCP_OIDC_AUDIENCE: ${MONYNHA_MCP_PUBLIC_URL:?Set the full HTTPS resource URL ending in /mcp}
       MONYNHA_MCP_OIDC_JWKS_URL: ${MONYNHA_MCP_OIDC_JWKS_URL:?Set the OIDC signing keys URL}
+      # Supabase requires a resource-bound token, an explicit client allowlist,
+      # and a separate positive client admission in Monynha's own database.
+      MONYNHA_MCP_OAUTH_PROVIDER: ${MONYNHA_MCP_OAUTH_PROVIDER:-generic}
+      MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS: ${MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS:-[]}
+      # Never enable writes solely by deploying this Compose stack.
+      MONYNHA_MCP_WRITES_ENABLED: ${MONYNHA_MCP_WRITES_ENABLED:-false}
       MONYNHA_MCP_ALLOWED_ORIGINS: ${MONYNHA_MCP_ALLOWED_ORIGINS:-[]}
       MONYNHA_MCP_CALLS_PER_MINUTE: ${MONYNHA_MCP_CALLS_PER_MINUTE:-60}
       MONYNHA_MCP_MAX_CONCURRENT_PER_CONNECTION: ${MONYNHA_MCP_MAX_CONCURRENT_PER_CONNECTION:-4}

@@ -37,6 +37,17 @@ def test_coolify_requires_external_postgres_oidc_and_runs_migrations_before_star
     assert command.index("alembic upgrade head") < command.index("exec monynha-odoo-mcp")
 
 
+def test_coolify_forwards_oauth_mode_client_allowlist_and_write_gate():
+    """Without explicit Coolify variables, the gateway must stay generic/read-only."""
+    env = _coolify_stack()["services"]["mcp"]["environment"]
+
+    assert env["MONYNHA_MCP_OAUTH_PROVIDER"] == "${MONYNHA_MCP_OAUTH_PROVIDER:-generic}"
+    assert env["MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS"] == (
+        "${MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS:-[]}"
+    )
+    assert env["MONYNHA_MCP_WRITES_ENABLED"] == "${MONYNHA_MCP_WRITES_ENABLED:-false}"
+
+
 def test_coolify_health_checks_readiness_and_confines_runtime():
     mcp = _coolify_stack()["services"]["mcp"]
     assert "/readyz" in " ".join(mcp["healthcheck"]["test"])
