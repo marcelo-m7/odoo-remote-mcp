@@ -31,6 +31,15 @@ jobs:
         run: uv run --locked pytest -q
       - name: Build wheel
         run: uv build
+      - name: Validate Coolify Compose
+        env:
+          MONYNHA_MCP_DATABASE_URL: postgresql+psycopg://example:example@postgres:5432/monynha
+          MONYNHA_MCP_PUBLIC_URL: https://mcp.example.com/mcp
+          MONYNHA_MCP_OIDC_ISSUER: https://id.example.com
+          MONYNHA_MCP_OIDC_JWKS_URL: https://id.example.com/jwks
+        run: docker compose -f docker-compose.coolify.yml config --quiet
+      - name: Build production container
+        run: docker build -t monynha-odoo-mcp:ci .
       - name: Assert no env files tracked
         run: |
           if git ls-files | grep -E '(^|/)(\.env|[^/]+\.env)$'; then

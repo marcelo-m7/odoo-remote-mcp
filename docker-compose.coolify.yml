@@ -1,0 +1,55 @@
+# Coolify Git-based Docker Compose Application (normal/managed mode).
+# PostgreSQL is a separate Coolify database resource with managed backups.
+# Route the MCP service's internal port 8000 through Coolify Domains;
+# never publish a host port or route only /mcp (OAuth metadata uses /.well-known).
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        alembic upgrade head
+        exec monynha-odoo-mcp
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      MONYNHA_MCP_MODE: http
+      MONYNHA_MCP_HTTP_HOST: 0.0.0.0
+      MONYNHA_MCP_HTTP_PORT: "8000"
+      MONYNHA_MCP_DATABASE_URL: ${MONYNHA_MCP_DATABASE_URL:?Set the private Coolify PostgreSQL connection URL}
+      MONYNHA_MCP_PUBLIC_URL: ${MONYNHA_MCP_PUBLIC_URL:?Set the full HTTPS resource URL ending in /mcp}
+      MONYNHA_MCP_OIDC_ISSUER: ${MONYNHA_MCP_OIDC_ISSUER:?Set the OIDC issuer URL}
+      MONYNHA_MCP_OIDC_AUDIENCE: ${MONYNHA_MCP_PUBLIC_URL:?Set the full HTTPS resource URL ending in /mcp}
+      MONYNHA_MCP_OIDC_JWKS_URL: ${MONYNHA_MCP_OIDC_JWKS_URL:?Set the OIDC signing keys URL}
+      MONYNHA_MCP_ALLOWED_ORIGINS: ${MONYNHA_MCP_ALLOWED_ORIGINS:-[]}
+      MONYNHA_MCP_CALLS_PER_MINUTE: ${MONYNHA_MCP_CALLS_PER_MINUTE:-60}
+      MONYNHA_MCP_MAX_CONCURRENT_PER_CONNECTION: ${MONYNHA_MCP_MAX_CONCURRENT_PER_CONNECTION:-4}
+      MONYNHA_MCP_MAX_RESPONSE_BYTES: ${MONYNHA_MCP_MAX_RESPONSE_BYTES:-2097152}
+      # Add one explicit mapping per authorized Odoo secret reference.
+      # Store the actual value in Coolify Environment Variables, never in Git.
+      MONYNHA_ODOO_KEY_DEFAULT: ${MONYNHA_ODOO_KEY_DEFAULT:-}
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

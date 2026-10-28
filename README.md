@@ -165,6 +165,12 @@ OAuth Server enablement, a client, consent UI, resource-bound token hook,
 staging selection and rollout require separate approval. Coolify deployment
 proposals in PR #3 remain independent of this implementation branch.
 
+For Coolify production deployment, use **`docker-compose.coolify.yml`**
+instead of the integrated database example. It runs Alembic before starting,
+expects a separately managed private PostgreSQL database and delegates HTTPS
+domain routing to Coolify without publishing a host port. Follow the
+[Coolify deployment guide](docs/deployment/coolify.md) before deploying.
+
 ## Architecture, limits and security
 
 - [Architecture design](docs/superpowers/specs/2026-10-27-monynha-odoo-mcp-design.md)
