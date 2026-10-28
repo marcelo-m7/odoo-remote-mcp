@@ -1,8 +1,9 @@
 # Deploy Monynha Odoo MCP on Coolify
 
 **Status:** deployment configuration prepared; live production deployment and
-OIDC/Odoo integration remain subject to staging verification. The alpha has no
-SaaS onboarding or built-in OAuth identity provider.
+OAuth/Odoo integration remain subject to staging verification. The alpha has no
+SaaS onboarding or built-in OAuth identity provider; Supabase can serve as an
+**external** OAuth server only after its separate compatibility gates pass.
 
 ## Deployment architecture
 
@@ -12,8 +13,10 @@ SaaS onboarding or built-in OAuth identity provider.
   with persistent volume, scheduled backups and tested restore procedure.
 - **Coolify HTTPS reverse proxy:** expose only the MCP service on internal port
   `8000`; no `ports:` mapping and no publicly exposed PostgreSQL listener.
-- **External OIDC provider:** the access token audience is the full MCP URL,
-  and tokens must include the `mcp:odoo` scope.
+- **External OIDC/OAuth provider:** the access token audience must be the full
+  MCP resource URL. Generic providers require the `mcp:odoo` scope; Supabase
+  mode instead requires an explicitly admitted OAuth client and a private
+  bound principal, while still rejecting ordinary FACODI access tokens.
 
 The existing `docker-compose.example.yml` bundles PostgreSQL for local or
 demonstration setups; it is **not** the production Coolify compose.
@@ -41,7 +44,8 @@ connection string or print it in deployment logs.
 
 1. Choose **New Resource → Git Repository** in Coolify.
 2. Select the reviewed repository branch (normally `main` **after merge**;
-   use `feat/monynha-mcp-v01` only for pre-production verification).
+   for pre-production verification, select the specific reviewed feature branch
+   or immutable commit).
 3. Select **Docker Compose** as the build strategy.
 4. Base Directory: `/`; Docker Compose Location: `docker-compose.coolify.yml`.
 5. Keep Compose deployment in the normal managed mode; do **not** enable Raw.
@@ -61,12 +65,38 @@ OIDC resource metadata lives under `/.well-known/oauth-protected-resource/mcp`.
 | `MONYNHA_MCP_PUBLIC_URL` | `https://mcp.example.com/mcp` |
 | `MONYNHA_MCP_OIDC_ISSUER` | `https://issuer.example.com` |
 | `MONYNHA_MCP_OIDC_JWKS_URL` | `https://issuer.example.com/.well-known/jwks.json` |
+| `MONYNHA_MCP_OAUTH_PROVIDER` | `generic` (default) or `supabase`; selects provider-specific validation |
+| `MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS` | JSON array of permitted Supabase OAuth client IDs, e.g. `["pilot-client-id"]`; defaults to `[]` |
+| `MONYNHA_MCP_WRITES_ENABLED` | `false` (default); do not enable for the read-only pilot |
 | `MONYNHA_MCP_ALLOWED_ORIGINS` | Optional JSON array, e.g. `["https://trusted.example.com"]` |
 | `MONYNHA_ODOO_KEY_DEFAULT` | Optional Odoo API key, secret, if referenced by a connection |
 
 `MONYNHA_MCP_OIDC_AUDIENCE` is automatically set to the **same** public
 resource URL by the Compose definition. Register this audience with the OIDC
-issuer and grant the `mcp:odoo` scope to the permitted client(s).
+issuer. For `generic` mode, grant the `mcp:odoo` scope to permitted clients.
+For `supabase` mode, also require a **single signed `aud` string equal to the
+MCP URL** and a signed top-level `client_id` present in both the JSON allowlist
+and the private Monynha client-admission database. A standard FACODI token with
+`aud=authenticated` is never a substitute. Do not loosen audience validation
+to get past an incompatible OAuth setup.
+
+Switching `MONYNHA_MCP_OAUTH_PROVIDER=supabase` with the default empty client
+list deliberately **prevents startup**: supply the allowlist only after a
+staging OAuth token/consent validation and explicitly admit each corresponding
+client using `monynha-odoo-admin oauth-client admit`. Then bind each authorized
+user's verified `(issuer, subject)` to a separate Monynha principal using
+`monynha-odoo-admin identity bind`, and grant only the necessary memberships,
+connections and read policies. Supabase credentials or `service_role` tokens
+must never be used as client bearer credentials or stored here.
+
+The shared FACODI Supabase project currently **does not expose the documented
+OAuth authorization-server discovery endpoint** (observed `404` on
+2026-10-28); this Compose update does **not** activate it. See the
+[compatibility contract](supabase-oauth-compatibility.md) and
+[staged rollout checklist](supabase-oauth-rollout-checklist.md). Token `aud`
+customization, consent routing and RFC 8707 behavior require an isolated,
+approved staging experiment and regression checks of existing FACODI login,
+refresh and RLS before production.
 
 Do not add real credentials to the Compose file. To support more Odoo instances,
 add an explicit `MONYNHA_ODOO_KEY_<NAME>: ${MONYNHA_ODOO_KEY_<NAME>:?}` mapping
@@ -96,9 +126,12 @@ unless an explicit down-migration and restore plan exists.
 2. `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`
    advertises the correct resource and authorization server.
 3. An unauthenticated MCP request receives `401`; an authorized OIDC client can
-   initialize, list tools and use a permitted Odoo read connection.
+   initialize, list tools and use a permitted Odoo read connection. In Supabase
+   mode, test an actual approved client token, and reject standard FACODI
+   `aud=authenticated` tokens, unknown/revoked clients and unbound identities.
 4. A user outside the connection's organization is denied. The Odoo API key
-   never appears in MCP responses or logs.
+   never appears in MCP responses or logs. With writes disabled, write tools
+   must not send any Odoo requests.
 5. Verify database backup and restore, secret rotation, migration behavior and
    rollback strategy in staging before routing production traffic.
 
