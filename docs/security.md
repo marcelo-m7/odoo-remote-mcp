@@ -7,9 +7,16 @@ not as a general-purpose HTTP proxy. **Do not expose it to production before a s
 
 - MCP clients authenticate with an external OIDC issuer, not with Odoo credentials.
 - Access tokens must have a valid RSA/ECDSA signature, issuer, expiration, audience
-  equal to the public MCP resource URL, subject and `mcp:odoo` scope.
-- The authenticated token subject maps to a server-managed principal. Organization
-  membership and connection grants are loaded from PostgreSQL, not chosen by the model.
+  equal to the public MCP resource URL and subject. `generic` mode requires
+  `mcp:odoo` scope; `supabase` mode requires a verified **top-level** `client_id`
+  in both a deployment allowlist and private database admission. Generic FACODI
+  tokens with `aud=authenticated` cannot be accepted as MCP tokens. Supabase
+  OAuth also requires the signed `role=authenticated` user claim, denying
+  `service_role` and `anon` project tokens regardless of other claims.
+- In Supabase mode, `(iss, sub)` explicitly maps to a private Monynha principal,
+  not the token's email, role or mutable user metadata. Authenticated FACODI
+  users never acquire a Monynha principal, membership or Odoo grant automatically.
+  Organization membership and model/operation grants remain in private PostgreSQL.
 - Odoo API keys are resolved exclusively from `env:MONYNHA_ODOO_KEY_*` references.
   The registry stores references, never key values. Do not mount credential files in Git.
 - The user behind the Odoo key should have minimal ACLs and record rules.
@@ -18,6 +25,9 @@ not as a general-purpose HTTP proxy. **Do not expose it to production before a s
 
 - Tools use an explicit `connection_id`. No shared active connection exists.
 - Model-level permissions `read`, `create` and `update` are deny-by-default.
+- `MONYNHA_MCP_WRITES_ENABLED=false` globally blocks `create`/`update` before
+  any Odoo call even when old policies grant them. A `true` value is an additional
+  *necessary*, never sufficient, condition for writing.
 - Delete, arbitrary method execution, payment, add-on installation and `sudo` are
   not exposed in v0.1. Local `stdio` grants **read only** by default.
 - Every Odoo ORM call is a separate JSON-2 transaction. Multi-step workflows are
@@ -54,7 +64,10 @@ not as a general-purpose HTTP proxy. **Do not expose it to production before a s
 ## Audit and confidentiality
 
 - Audit events record principal, connection, operation, outcome and allowlisted
-  metadata. No raw records, Odoo tracebacks, prompts or API key values are written.
+  metadata. Supabase-mode Odoo operations attribute verified OAuth client ID to
+  the private principal; denied client or unbound-identity access records an opaque
+  client ID and denial stage without logging the external subject or token.
+  No raw records, Odoo tracebacks, prompts or API key values are written.
 - The append-only repository method is **not** a database-level immutability
   guarantee; use a dedicated DB role or external immutable sink for regulated uses.
 - Configure backup, retention, PII controls, TLS, network egress rules and secret
@@ -69,6 +82,12 @@ not as a general-purpose HTTP proxy. **Do not expose it to production before a s
 CI uses mocked Odoo responses and disposable SQL stores. Production FACODI and
 Boa Vista instances are not part of automated tests. This alpha is not evidence
 of compatibility across every Odoo edition or third-party module.
+
+Supabase OAuth Server activation, Custom Access Token Hook installation, and
+FACODI consent frontend are **not implemented by this MCP code change**. Live
+OAuth discovery returned `404` in the 2026-10-27 read-only probe. Effective
+PKCE, RFC 8707 resource binding, correct token audience, live consent route,
+FACODI RLS/login regression, and Coolify E2E must be confirmed before rollout.
 
 Report security issues privately to the repository maintainer; do not post
 credentials or exploit data in public issues.

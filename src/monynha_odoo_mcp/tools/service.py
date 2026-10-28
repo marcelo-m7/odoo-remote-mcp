@@ -23,6 +23,8 @@ class OdooToolService:
         max_results: int = 100,
         audit: AuditStore | None = None,
         rate_limiter: RateLimiter | None = None,
+        writes_enabled: bool = False,
+        oauth_client_id: str | None = None,
     ) -> None:
         self.adapter = adapter
         self.connections = connections
@@ -30,6 +32,13 @@ class OdooToolService:
         self.max_results = max_results
         self.audit = audit
         self.rate_limiter = rate_limiter or RateLimiter()
+        self.writes_enabled = writes_enabled
+        self.oauth_client_id = oauth_client_id
+
+    def _reject_disabled_write(self, connection_id: str, operation: str, model: str) -> None:
+        if operation in {"create", "update"} and not self.writes_enabled:
+            self._try_audit(connection_id, operation, model, "denied")
+            raise McpError("access_denied", "Odoo writes are disabled")
 
     def _connection(self, connection_id: str, operation: str, model: str | None = None):
         return self.connections.get_for_principal(self.principal, connection_id, operation, model)
@@ -76,6 +85,7 @@ class OdooToolService:
         self, connection_id: str, model: str, operation: str, method: str, payload: dict
     ) -> ToolResult:
         is_write = operation in {"create", "update"}
+        self._reject_disabled_write(connection_id, operation, model)
         try:
             connection = self._connection(connection_id, operation, model)
         except McpError:
@@ -125,13 +135,16 @@ class OdooToolService:
 
     def _record_audit(self, connection_id: str, operation: str, model: str, outcome: str) -> None:
         if self.audit is not None:
+            details = {"model": model}
+            if self.oauth_client_id is not None:
+                details["client_id"] = self.oauth_client_id
             self.audit.append(
                 AuditEvent(
                     principal_id=self.principal.id,
                     connection_id=connection_id,
                     operation=operation,
                     outcome=outcome,
-                    details={"model": model},
+                    details=details,
                 )
             )
 
@@ -239,6 +252,7 @@ class OdooToolService:
     async def record_create(
         self, connection_id: str, model: str, values: dict[str, Any]
     ) -> ToolResult:
+        self._reject_disabled_write(connection_id, "create", model)
         if not values:
             raise McpError("invalid_arguments", "Creation values are required")
         self._write_values(values)
@@ -247,6 +261,7 @@ class OdooToolService:
     async def record_update(
         self, connection_id: str, model: str, ids: list[int], values: dict[str, Any]
     ) -> ToolResult:
+        self._reject_disabled_write(connection_id, "update", model)
         self._ids(ids)
         if not values:
             raise McpError("invalid_arguments", "Update values are required")

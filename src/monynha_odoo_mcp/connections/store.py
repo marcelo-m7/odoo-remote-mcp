@@ -27,10 +27,16 @@ class ConnectionRegistry:
         self._memberships.add((principal_id, organization_id))
 
     def list_for_principal(self, principal: Principal) -> list[OdooConnection]:
+        readable = {
+            item.connection_id
+            for item in self.policy.policies
+            if item.principal_id == principal.id and "read" in item.operations
+        }
         return [
             entry.connection
             for entry in self._connections.values()
             if (principal.id, entry.organization_id) in self._memberships
+            and entry.connection.id in readable
         ]
 
     def get_for_principal(

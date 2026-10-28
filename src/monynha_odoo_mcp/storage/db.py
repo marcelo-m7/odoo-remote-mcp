@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     String,
@@ -25,6 +26,21 @@ class OrganizationRow(Base):
 class PrincipalRow(Base):
     __tablename__ = "principals"
     id: Mapped[str] = mapped_column(String(256), primary_key=True)
+
+
+class ExternalIdentityRow(Base):
+    __tablename__ = "external_identities"
+    issuer: Mapped[str] = mapped_column(String(512), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(256), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(
+        String(256), ForeignKey("principals.id"), nullable=False, index=True
+    )
+
+
+class OAuthClientAdmissionRow(Base):
+    __tablename__ = "oauth_client_admissions"
+    client_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class MembershipRow(Base):

@@ -21,7 +21,9 @@ class FakeAdapter:
         return True
 
 
-def make_service(operations=frozenset({"read", "create", "update"}), audit=None):
+def make_service(
+    operations=frozenset({"read", "create", "update"}), audit=None, writes_enabled=True
+):
     policy = PolicyEngine(
         [Policy("alice", "odoo-a", operations, frozenset({"res.partner", "ir.model"}))]
     )
@@ -35,7 +37,12 @@ def make_service(operations=frozenset({"read", "create", "update"}), audit=None)
     registry.grant_membership("alice", "tenant-a")
     adapter = FakeAdapter()
     return OdooToolService(
-        adapter, registry, Principal("alice"), max_results=50, audit=audit
+        adapter,
+        registry,
+        Principal("alice"),
+        max_results=50,
+        audit=audit,
+        writes_enabled=writes_enabled,
     ), adapter
 
 
@@ -222,3 +229,36 @@ async def test_write_timeout_is_reported_as_uncertain_not_safe_to_retry():
         await service.record_create("odoo-a", "res.partner", {"name": "Uncertain"})
     assert exc.value.code == "write_outcome_unknown"
     assert [event.outcome for event in recorder.events] == ["started", "outcome_unknown"]
+
+
+@pytest.mark.asyncio
+async def test_global_read_only_gate_rejects_legacy_create_and_update_permissions():
+    class Recorder:
+        def __init__(self):
+            self.events = []
+
+        def append(self, event):
+            self.events.append(event)
+
+    audit = Recorder()
+    service, adapter = make_service(audit=audit, writes_enabled=False)
+    with pytest.raises(McpError, match="disabled") as created:
+        await service.record_create("odoo-a", "res.partner", {"name": "Must not write"})
+    with pytest.raises(McpError, match="disabled") as updated:
+        await service.record_update("odoo-a", "res.partner", [1], {"name": "Must not write"})
+    assert created.value.code == updated.value.code == "access_denied"
+    assert adapter.calls == []
+    assert [event.outcome for event in audit.events] == ["denied", "denied"]
+    assert "Must not write" not in str(audit.events)
+    await service.record_count("odoo-a", "res.partner")
+    assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_dispatch_cannot_bypass_write_gate():
+    service, adapter = make_service(writes_enabled=False)
+    with pytest.raises(McpError, match="disabled"):
+        await service._call(
+            "odoo-a", "res.partner", "create", "create", {"vals_list": [{"name": "No"}]}
+        )
+    assert adapter.calls == []

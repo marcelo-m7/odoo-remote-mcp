@@ -4,6 +4,7 @@ import httpx
 import pytest
 from mcp.server.auth.provider import AccessToken
 
+from monynha_odoo_mcp.audit.store import AuditStore
 from monynha_odoo_mcp.connections.models import OdooConnection
 from monynha_odoo_mcp.connections.sql_store import SqlConnectionStore
 from monynha_odoo_mcp.server import create_http_app
@@ -12,15 +13,19 @@ from monynha_odoo_mcp.storage.db import create_database, create_schema
 
 
 class FakeVerifier:
+    def __init__(self, *, client_id="test-client", scopes=None):
+        self.client_id = client_id
+        self.scopes = scopes if scopes is not None else ["mcp:odoo"]
+
     async def verify_token(self, token):
         if token not in {"token-alice", "token-bob"}:
             return None
         subject = token[6:]
         return AccessToken(
             token=token,
-            client_id="test-client",
+            client_id=self.client_id,
             subject=subject,
-            scopes=["mcp:odoo"],
+            scopes=self.scopes,
             resource="https://mcp.example/mcp",
         )
 
@@ -32,7 +37,7 @@ class FakeAdapter:
         return True
 
 
-def settings(allowed_origins=None):
+def settings(allowed_origins=None, *, provider="generic"):
     return Settings(
         mode="http",
         database_url="sqlite+pysqlite:///:memory:",
@@ -41,12 +46,22 @@ def settings(allowed_origins=None):
         oidc_jwks_url="https://id.example/jwks",
         public_url="https://mcp.example/mcp",
         allowed_origins=allowed_origins or [],
+        oauth_provider=provider,
+        oauth_allowed_client_ids=["test-client"] if provider == "supabase" else [],
         _env_file=None,
     )
 
 
 @asynccontextmanager
-async def mcp_test_client(allowed_origins=None):
+async def mcp_test_client(
+    allowed_origins=None,
+    *,
+    provider="generic",
+    admitted=True,
+    bound=True,
+    client_id="test-client",
+    yield_store=False,
+):
     engine, sessions = create_database("sqlite+pysqlite:///:memory:")
     create_schema(engine)
     store = SqlConnectionStore(sessions)
@@ -64,17 +79,23 @@ async def mcp_test_client(allowed_origins=None):
             ),
         )
         store.grant_policy(who, f"odoo-{who}", "read", "res.partner")
+        if provider == "supabase" and bound:
+            store.bind_external_identity(who, "https://id.example", who)
+    if provider == "supabase" and admitted:
+        store.set_oauth_client_admission("test-client", enabled=True)
     app = create_http_app(
-        settings(allowed_origins),
+        settings(allowed_origins, provider=provider),
         sessions=sessions,
-        verifier=FakeVerifier(),
+        verifier=FakeVerifier(
+            client_id=client_id, scopes=["openid"] if provider == "supabase" else None
+        ),
         adapter=FakeAdapter(),
     )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://mcp.example"
         ) as client:
-            yield client
+            yield (client, store) if yield_store else client
     engine.dispose()
 
 
@@ -206,3 +227,77 @@ async def test_allowlisted_browser_origin_can_use_authenticated_mcp():
             json={"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}},
         )
         assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_supabase_oauth_subject_needs_explicit_binding_and_client_admission():
+    # An OAuth token with only OIDC scopes must work after private onboarding.
+    args = {"connection_id": "odoo-alice", "model": "res.partner", "domain": []}
+    async with mcp_test_client(provider="supabase") as client:
+        allowed = await invoke(
+            client,
+            "token-alice",
+            "tools/call",
+            {
+                "name": "record_search",
+                "arguments": args,
+            },
+        )
+        assert allowed.status_code == 200, allowed.text
+        assert "odoo-alice" in allowed.text
+
+    for blocked_setup in ({"admitted": False}, {"bound": False}, {"client_id": "rogue"}):
+        async with mcp_test_client(provider="supabase", **blocked_setup) as client:
+            denied = await invoke(
+                client,
+                "token-alice",
+                "tools/call",
+                {
+                    "name": "record_search",
+                    "arguments": args,
+                },
+            )
+            assert denied.status_code in {200, 401, 403}
+            assert "odoo-alice" not in str(
+                denied.json().get("result", {}).get("structuredContent", {})
+            )
+            if denied.status_code == 200:
+                assert denied.json()["result"].get("isError") is True
+
+
+@pytest.mark.asyncio
+async def test_supabase_client_revocation_drops_access_on_next_request():
+    async with mcp_test_client(provider="supabase", yield_store=True) as (client, store):
+        first = await invoke(
+            client,
+            "token-alice",
+            "tools/call",
+            {
+                "name": "connection_list",
+                "arguments": {},
+            },
+        )
+        assert first.status_code == 200, first.text
+        assert "odoo-alice" in first.text
+        store.set_oauth_client_admission("test-client", enabled=False)
+        after = await invoke(
+            client,
+            "token-alice",
+            "tools/call",
+            {
+                "name": "connection_list",
+                "arguments": {},
+            },
+            2,
+        )
+        assert after.status_code in {200, 401, 403}
+        assert "odoo-alice" not in str(after.json().get("result", {}).get("structuredContent", {}))
+        if after.status_code == 200:
+            assert after.json()["result"].get("isError") is True
+        audit_events = AuditStore(store.sessions).list_recent()
+        assert any(
+            event["operation"] == "oauth_authorize"
+            and event["outcome"] == "denied"
+            and event["details"].get("client_id") == "test-client"
+            for event in audit_events
+        )

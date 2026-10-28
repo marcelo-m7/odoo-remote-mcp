@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from monynha_odoo_mcp.auth.principal import Principal
 from monynha_odoo_mcp.connections.models import OdooConnection
 from monynha_odoo_mcp.connections.sql_store import SqlConnectionStore
+from monynha_odoo_mcp.core.errors import McpError
 from monynha_odoo_mcp.storage.db import create_database, create_schema
 
 
@@ -81,5 +82,43 @@ def test_alembic_upgrade_creates_schema(tmp_path):
         "connections",
         "policies",
         "audit_events",
+        "external_identities",
+        "oauth_client_admissions",
     } <= tables
     engine.dispose()
+
+
+def test_external_identity_requires_explicit_issuer_and_subject_binding(database):
+    _, sessions = database
+    store = SqlConnectionStore(sessions)
+    store.add_principal("private-user-1")
+    store.add_principal("private-user-2")
+    issuer_a = "https://facodi-identity.example/auth/v1"
+    issuer_b = "https://other-identity.example/auth/v1"
+    assert store.resolve_external_principal(issuer_a, "same-sub") is None
+    store.bind_external_identity("private-user-1", issuer_a, "same-sub")
+    assert store.resolve_external_principal(issuer_a, "same-sub").id == "private-user-1"
+    assert store.resolve_external_principal(issuer_b, "same-sub") is None
+    store.bind_external_identity("private-user-2", issuer_b, "same-sub")
+    assert store.resolve_external_principal(issuer_b, "same-sub").id == "private-user-2"
+    with pytest.raises(McpError, match="already bound"):
+        store.bind_external_identity("private-user-2", issuer_a, "same-sub")
+    assert store.resolve_external_principal(issuer_a, "same-sub").id == "private-user-1"
+
+
+def test_external_identity_binding_rejects_nonexistent_principal(database):
+    _, sessions = database
+    store = SqlConnectionStore(sessions)
+    with pytest.raises(McpError, match="not onboarded"):
+        store.bind_external_identity("missing", "https://id.example/auth/v1", "user")
+
+
+def test_oauth_client_admission_can_be_revoked_without_invalidating_jwt(database):
+    _, sessions = database
+    store = SqlConnectionStore(sessions)
+    assert store.is_oauth_client_admitted("client-a") is False
+    store.set_oauth_client_admission("client-a", enabled=True)
+    assert store.is_oauth_client_admitted("client-a") is True
+    assert store.is_oauth_client_admitted("client-b") is False
+    store.set_oauth_client_admission("client-a", enabled=False)
+    assert store.is_oauth_client_admitted("client-a") is False
