@@ -125,6 +125,12 @@ enforce shared limits at the reverse proxy/API gateway when scaling to multiple
 replicas. Configure browser origins only for clients you trust; that setting
 does not replace OIDC authentication.
 
+For Coolify production deployment, use **`docker-compose.coolify.yml`**
+instead of the integrated database example. It runs Alembic before starting,
+expects a separately managed private PostgreSQL database and delegates HTTPS
+domain routing to Coolify without publishing a host port. Follow the
+[Coolify deployment guide](docs/deployment/coolify.md) before deploying.
+
 ## Architecture, limits and security
 
 - [Architecture design](docs/superpowers/specs/2026-10-27-monynha-odoo-mcp-design.md)
