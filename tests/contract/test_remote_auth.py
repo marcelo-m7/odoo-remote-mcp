@@ -1,10 +1,11 @@
 import json
 import time
+from pathlib import Path
 
 import httpx
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from monynha_odoo_mcp.auth.oidc import OidcJwtVerifier, verify_bearer_token
 from monynha_odoo_mcp.core.errors import McpError
@@ -138,3 +139,110 @@ async def test_failed_initial_jwks_request_is_cooled_down():
         for _ in range(20):
             assert await verifier.verify_token(make_token(key, "unknown")) is None
     assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "permitted"),
+    [
+        ({}, True),
+        ({"aud": "authenticated"}, False),
+        ({"aud": ["authenticated", "https://mcp.example/mcp"]}, False),
+        ({"client_id": "another-client"}, False),
+        ({"client_id": ""}, False),
+        ({"client_id": None}, False),
+        ({"client_id": "monynha-registered-client", "azp": "other"}, False),
+        ({"role": "service_role"}, False),
+        ({"role": "anon"}, False),
+        ({"role": None}, False),
+        ({"client_id": "monynha-registered-client", "user_metadata": {"client_id": "other"}}, True),
+    ],
+)
+async def test_supabase_oauth_accepts_only_bound_access_token(changes, permitted):
+    # Breaks if an ordinary FACODI audience or unapproved OAuth client is accepted.
+    key, jwk = make_key()
+    fixture_path = Path(__file__).parent / "fixtures" / "supabase_oauth_claims.json"
+    claims = json.loads(fixture_path.read_text(encoding="utf-8"))["mcp_oauth"]
+    claims["iss"] = "https://id.example"
+    claims.update(changes)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"keys": [jwk]}))
+    ) as client:
+        verifier = OidcJwtVerifier(
+            issuer="https://id.example",
+            audience="https://mcp.example/mcp",
+            jwks_url="https://id.example/jwks",
+            required_scopes=set(),
+            provider="supabase",
+            allowed_client_ids=frozenset({"monynha-registered-client"}),
+            client=client,
+        )
+        result = await verifier.verify_token(make_token(key, "key1", **claims))
+    assert (result is not None) is permitted
+    if result is not None:
+        assert result.subject == "facodi-user-a"
+        assert result.client_id == "monynha-registered-client"
+
+
+@pytest.mark.asyncio
+async def test_supabase_oauth_never_uses_subject_as_missing_client_id():
+    key, jwk = make_key()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"keys": [jwk]}))
+    ) as client:
+        verifier = OidcJwtVerifier(
+            issuer="https://id.example",
+            audience="https://mcp.example/mcp",
+            jwks_url="https://id.example/jwks",
+            required_scopes=set(),
+            provider="supabase",
+            allowed_client_ids=frozenset({"alice"}),
+            client=client,
+        )
+        assert await verifier.verify_token(make_token(key, "key1", scope="openid")) is None
+
+
+@pytest.mark.asyncio
+async def test_supabase_signature_time_claims_and_es256_keys():
+    rsa_key, rsa_jwk = make_key()
+    ec_key = ec.generate_private_key(ec.SECP256R1())
+    ec_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(ec_key.public_key()))
+    ec_jwk.update({"kid": "ec-key", "use": "sig", "alg": "ES256"})
+    now = int(time.time())
+    valid_claims = {
+        "iss": "https://id.example",
+        "aud": "https://mcp.example/mcp",
+        "sub": "alice",
+        "iat": now,
+        "exp": now + 600,
+        "role": "authenticated",
+        "client_id": "monynha-registered-client",
+    }
+    ec_token = jwt.encode(valid_claims, ec_key, algorithm="ES256", headers={"kid": "ec-key"})
+    invalid_key, _ = make_key()
+    invalid_tokens = [
+        make_token(rsa_key, "key1", **(valid_claims | {"exp": now - 120})),
+        make_token(rsa_key, "key1", **(valid_claims | {"iat": now + 120})),
+        make_token(rsa_key, "key1", **(valid_claims | {"nbf": now + 120})),
+        make_token(rsa_key, "key1", **(valid_claims | {"exp": None})),
+        make_token(invalid_key, "key1", **valid_claims),
+        jwt.encode(valid_claims, rsa_key, algorithm="RS256"),
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"keys": [rsa_jwk, ec_jwk]})
+        )
+    ) as client:
+        verifier = OidcJwtVerifier(
+            issuer="https://id.example",
+            audience="https://mcp.example/mcp",
+            jwks_url="https://id.example/jwks",
+            required_scopes=set(),
+            provider="supabase",
+            allowed_client_ids=frozenset({"monynha-registered-client"}),
+            client=client,
+        )
+        assert (await verifier.verify_token(ec_token)).client_id == "monynha-registered-client"
+        for token in invalid_tokens:
+            assert await verifier.verify_token(token) is None

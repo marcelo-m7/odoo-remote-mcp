@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     oidc_issuer: str | None = None
     oidc_audience: str | None = None
     oidc_jwks_url: HttpUrl | None = None
+    oauth_provider: Literal["generic", "supabase"] = "generic"
+    oauth_allowed_client_ids: list[str] = []
     public_url: HttpUrl | None = None
     local_principal_id: str | None = None
     local_connection_id: str | None = None
@@ -29,6 +31,7 @@ class Settings(BaseSettings):
     max_response_bytes: int = 2_097_152
     calls_per_minute: int = 60
     max_concurrent_per_connection: int = 4
+    writes_enabled: bool = False
     allowed_origins: list[str] = []
 
     @model_validator(mode="after")
@@ -45,6 +48,12 @@ class Settings(BaseSettings):
             raise ValueError("HTTP mode requires database and OIDC configuration")
         if self.http_port < 1 or self.http_port > 65535:
             raise ValueError("invalid HTTP port")
+        if self.mode == "http" and self.oauth_provider == "supabase":
+            if not self.oauth_allowed_client_ids or any(
+                not item or item.strip() != item or any(char.isspace() for char in item)
+                for item in self.oauth_allowed_client_ids
+            ):
+                raise ValueError("Supabase mode requires an explicit OAuth client allowlist")
         if (
             self.timeout_seconds <= 0
             or self.max_results < 1

@@ -48,6 +48,19 @@ def test_cross_tenant_connection_denied():
     assert [conn.id for conn in registry.list_for_principal(Principal("alice"))] == ["a"]
 
 
+def test_membership_without_explicit_connection_policy_never_lists_connection():
+    # Breaks if membership is accidentally treated as a connection capability.
+    registry = ConnectionRegistry(PolicyEngine([]))
+    registry.add(
+        StoredConnection(
+            OdooConnection("hidden", "https://odoo.example", None, "env:MONYNHA_ODOO_KEY_A"),
+            "org-a",
+        )
+    )
+    registry.grant_membership("alice", "org-a")
+    assert registry.list_for_principal(Principal("alice")) == []
+
+
 def test_unlisted_model_denied():
     registry = setup_registry()
     with pytest.raises(McpError) as exc:

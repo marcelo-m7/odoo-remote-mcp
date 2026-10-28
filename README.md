@@ -15,7 +15,8 @@ with an Odoo 19 JSON-2 adapter and explicit policies for multiple instances.
   and no automatic write retries. Large responses are stopped while streaming.
 - PostgreSQL tenant metadata, memberships, per-model operation grants, audit,
   versioned migration and administrative CLI.
-- OAuth protected resource metadata, remote OIDC/JWKS verification and `stdio`.
+- OAuth protected resource metadata, remote OIDC/JWKS verification,
+  optional Supabase OAuth 2.1 client/identity admission, and `stdio`.
 - Public-destination validation and DNS-pinned outbound HTTPS.
 - Compact default record fields, request/concurrency budgets, blocked nested
   x2many write commands and write-intent audit events.
@@ -27,8 +28,11 @@ The external JSON-2 API requires a compatible Odoo installation/plan.
 ## Prerequisites
 
 - Python 3.12+, `uv`, PostgreSQL for remotely hosted environments.
-- An external OIDC provider issuing RS256/ES256 tokens with the
-  `mcp:odoo` scope and audience equal to the MCP resource URL.
+- An external OIDC provider issuing RS256/ES256 tokens with an audience
+  equal to the MCP resource URL. Generic OIDC mode also requires `mcp:odoo`
+  scope. Supabase OAuth mode requires a top-level OAuth `client_id`, the
+  signed user role `authenticated` (never `service_role` or `anon`), a
+  dedicated MCP-bound audience, and private Monynha onboarding.
 - A dedicated low-privilege Odoo technical user and API key, stored in a
   deployment secret manager.
 
@@ -75,6 +79,9 @@ The public URL must be the full HTTPS resource path, for example
 | `MONYNHA_MCP_OIDC_ISSUER` | Trusted external OIDC issuer |
 | `MONYNHA_MCP_OIDC_AUDIENCE` | Must equal public URL |
 | `MONYNHA_MCP_OIDC_JWKS_URL` | Issuer's HTTPS signing keys |
+| `MONYNHA_MCP_OAUTH_PROVIDER` | `generic` (default) or `supabase`; never inferred from a JWT |
+| `MONYNHA_MCP_OAUTH_ALLOWED_CLIENT_IDS` | In Supabase mode, a required JSON list of pre-registered OAuth client IDs (e.g., `["my-client-id"]`) |
+| `MONYNHA_MCP_WRITES_ENABLED` | `false` (default); server-wide deny for Odoo create/update even with stored grants |
 | `MONYNHA_MCP_HTTP_HOST` | Interface behind reverse proxy, normally `0.0.0.0` |
 | `MONYNHA_MCP_ALLOWED_ORIGINS` | Optional JSON array of trusted browser HTTPS origins |
 | `MONYNHA_MCP_MAX_RESPONSE_BYTES` | Maximum Odoo response, default 2 MiB |
@@ -101,10 +108,32 @@ uv run --locked monynha-odoo-admin connection test --id my-odoo --principal oidc
 ```
 
 The CLI stores a *reference* to the API key. Supply its value separately
-through an approved secret source. The OIDC token subject must match the
-registered principal. Grants for `create` and `update` require deliberate
-administrative commands; deletion and nested relational write commands are
-unavailable. Non-idempotent writes persist an audit intent before dispatch.
+through an approved secret source. In **generic OIDC mode**, the token subject
+must match the registered principal. In **Supabase OAuth mode**, authenticate
+using the OAuth server but explicitly bind a verified `(issuer, subject)` to
+the existing private principal, then admit the OAuth client separately:
+
+```bash
+uv run --locked monynha-odoo-admin principal add --id my-internal-principal
+uv run --locked monynha-odoo-admin identity bind --principal my-internal-principal --issuer https://identity.example.com/auth/v1 --subject external-user-uuid
+uv run --locked monynha-odoo-admin oauth-client admit --id approved-client-uuid
+# Revoke without changing FACODI users or OAuth credentials:
+uv run --locked monynha-odoo-admin oauth-client revoke --id approved-client-uuid
+```
+
+These commands update only **Monynha's private metadata PostgreSQL**. They do
+not create FACODI OAuth clients, change Supabase Auth, or grant access to any
+organization/connection automatically. Also grant explicit Monynha memberships
+and `read` policies to that internal principal. Unknown external identities
+and unadmitted/revoked clients are rejected even with valid signed tokens.
+Every Supabase-mode Odoo access audit includes the verified OAuth `client_id`
+and private Monynha principal, never the external user token or subject.
+
+All create/update tools are **disabled at the server boundary by default**.
+Enabling writes requires `MONYNHA_MCP_WRITES_ENABLED=true`, an explicit
+Monynha policy grant, and separate security/deployment review. Deletion and
+nested relational write commands remain unavailable. Non-idempotent writes
+persist an audit intent before dispatch when explicitly enabled.
 If an Odoo write times out, check its records before retrying.
 
 Run the service only behind HTTPS reverse proxy:
@@ -124,6 +153,17 @@ manager. The rate limiter is in-process: run a single application worker or
 enforce shared limits at the reverse proxy/API gateway when scaling to multiple
 replicas. Configure browser origins only for clients you trust; that setting
 does not replace OIDC authentication.
+
+**FACODI integration readiness:** Supabase OAuth 2.1 discovery was not
+available at the documented public URL during the read-only probe on
+2026-10-27 (HTTP 404), although JWKS/OIDC discovery responded. The gateway's
+Supabase mode is implemented and locally tested using synthetic keys, but
+**not end-to-end activated against the live FACODI project**. Review the
+[compatibility report](docs/deployment/supabase-oauth-compatibility.md) and
+[rollout checklist](docs/deployment/supabase-oauth-rollout-checklist.md).
+OAuth Server enablement, a client, consent UI, resource-bound token hook,
+staging selection and rollout require separate approval. Coolify deployment
+proposals in PR #3 remain independent of this implementation branch.
 
 For Coolify production deployment, use **`docker-compose.coolify.yml`**
 instead of the integrated database example. It runs Alembic before starting,

@@ -4,7 +4,12 @@ from pydantic import ValidationError
 
 from monynha_odoo_mcp.server import build_stdio_server, create_http_app
 from monynha_odoo_mcp.settings import Settings
-from monynha_odoo_mcp.storage.db import create_database
+from monynha_odoo_mcp.storage.db import (
+    ExternalIdentityRow,
+    OAuthClientAdmissionRow,
+    create_database,
+    create_schema,
+)
 
 
 def remote_settings():
@@ -80,6 +85,26 @@ def test_http_rejects_audience_different_from_resource():
     settings = remote_settings().model_copy(update={"oidc_audience": "https://other.example"})
     with pytest.raises(ValueError, match="audience"):
         create_http_app(settings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_table", [ExternalIdentityRow, OAuthClientAdmissionRow])
+async def test_supabase_readiness_rejects_missing_oauth_migration(missing_table):
+    engine, sessions = create_database("sqlite+pysqlite:///:memory:")
+    create_schema(engine)
+    settings = remote_settings().model_copy(
+        update={"oauth_provider": "supabase", "oauth_allowed_client_ids": ["test-client"]}
+    )
+    app = create_http_app(settings, sessions=sessions)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://mcp.example"
+    ) as client:
+        ready = await client.get("/readyz")
+        assert ready.status_code == 200
+        missing_table.__table__.drop(engine)
+        unready = await client.get("/readyz")
+        assert unready.status_code == 503
+    engine.dispose()
 
 
 @pytest.mark.asyncio

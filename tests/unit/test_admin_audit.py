@@ -82,3 +82,42 @@ def test_admin_cli_connection_test_is_read_only(store, capsys):
     assert code == 0
     assert calls == [("odoo-a", "res.partner", "search_count", {"domain": []})]
     assert "reachable" in capsys.readouterr().out
+
+
+def test_admin_cli_can_bind_existing_principal_without_creating_permissions(store):
+    sql_store, sessions = store
+    sql_store.add_principal("existing")
+    assert (
+        main(
+            [
+                "identity",
+                "bind",
+                "--principal",
+                "existing",
+                "--issuer",
+                "https://issuer.example/auth/v1",
+                "--subject",
+                "external-user",
+            ],
+            sessions=sessions,
+        )
+        == 0
+    )
+    assert (
+        sql_store.resolve_external_principal("https://issuer.example/auth/v1", "external-user").id
+        == "existing"
+    )
+    assert (
+        sql_store.load_registry().list_for_principal(
+            sql_store.resolve_external_principal("https://issuer.example/auth/v1", "external-user")
+        )
+        == []
+    )
+
+
+def test_admin_cli_oauth_client_can_be_admitted_and_revoked(store):
+    sql_store, sessions = store
+    assert main(["oauth-client", "admit", "--id", "pilot"], sessions=sessions) == 0
+    assert sql_store.is_oauth_client_admitted("pilot") is True
+    assert main(["oauth-client", "revoke", "--id", "pilot"], sessions=sessions) == 0
+    assert sql_store.is_oauth_client_admitted("pilot") is False

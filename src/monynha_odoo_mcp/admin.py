@@ -23,6 +23,14 @@ def _parser() -> argparse.ArgumentParser:
     organization.add_parser("add").add_argument("--id", required=True)
     principal = groups.add_parser("principal").add_subparsers(dest="action", required=True)
     principal.add_parser("add").add_argument("--id", required=True)
+    identity = groups.add_parser("identity").add_subparsers(dest="action", required=True)
+    binding = identity.add_parser("bind")
+    binding.add_argument("--principal", required=True)
+    binding.add_argument("--issuer", required=True)
+    binding.add_argument("--subject", required=True)
+    clients = groups.add_parser("oauth-client").add_subparsers(dest="action", required=True)
+    for action in ("admit", "revoke"):
+        clients.add_parser(action).add_argument("--id", required=True)
     membership = groups.add_parser("membership").add_subparsers(dest="action", required=True)
     member_grant = membership.add_parser("grant")
     member_grant.add_argument("--principal", required=True)
@@ -69,6 +77,10 @@ def main(
             store.add_organization(arguments.id)
         elif arguments.group == "principal":
             store.add_principal(arguments.id)
+        elif arguments.group == "identity" and arguments.action == "bind":
+            store.bind_external_identity(arguments.principal, arguments.issuer, arguments.subject)
+        elif arguments.group == "oauth-client":
+            store.set_oauth_client_admission(arguments.id, enabled=arguments.action == "admit")
         elif arguments.group == "membership":
             store.grant_membership(arguments.principal, arguments.org)
         elif arguments.group == "connection" and arguments.action == "add":

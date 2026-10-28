@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from monynha_odoo_mcp.audit.models import AuditEvent
 from monynha_odoo_mcp.storage.db import AuditRow
 
-_SAFE_KEYS = {"entity", "model", "count", "duration_ms", "correlation_id", "status"}
+_SAFE_KEYS = {"entity", "model", "count", "duration_ms", "correlation_id", "status", "client_id"}
 
 
 class AuditStore:

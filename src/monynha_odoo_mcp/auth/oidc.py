@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import jwt
@@ -20,6 +20,9 @@ def _decode_claims(
     issuer: str,
     audience: str,
     required_scopes: set[str],
+    *,
+    provider: Literal["generic", "supabase"] = "generic",
+    allowed_client_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     try:
         header = jwt.get_unverified_header(token)
@@ -41,6 +44,21 @@ def _decode_claims(
         )
         if not isinstance(claims.get("sub"), str) or not claims["sub"]:
             raise ValueError("Missing subject")
+        if provider == "supabase":
+            if not isinstance(claims.get("aud"), str) or claims["aud"] != audience:
+                raise ValueError("OAuth resource audience must be unique")
+            # Only interactive Supabase user OAuth grants are supported. A signed
+            # service_role/anon project token must never authorize an Odoo user.
+            if claims.get("role") != "authenticated":
+                raise ValueError("OAuth user role is not authenticated")
+            client_id = claims.get("client_id")
+            if (
+                not isinstance(client_id, str)
+                or not client_id
+                or client_id not in allowed_client_ids
+                or ("azp" in claims and claims["azp"] != client_id)
+            ):
+                raise ValueError("OAuth client is not admitted")
         raw_scopes = claims.get("scope", claims.get("scp", ""))
         scopes = set(raw_scopes.split()) if isinstance(raw_scopes, str) else set(raw_scopes)
         if not required_scopes.issubset(scopes):
@@ -70,6 +88,8 @@ class OidcJwtVerifier:
         audience: str,
         jwks_url: str,
         required_scopes: set[str],
+        provider: Literal["generic", "supabase"] = "generic",
+        allowed_client_ids: frozenset[str] = frozenset(),
         client: httpx.AsyncClient | None = None,
         cache_seconds: int = 300,
         unknown_kid_cooldown_seconds: int = 30,
@@ -78,6 +98,8 @@ class OidcJwtVerifier:
         self.audience = audience
         self.jwks_url = jwks_url
         self.required_scopes = required_scopes
+        self.provider = provider
+        self.allowed_client_ids = allowed_client_ids
         self.client = client
         self.cache_seconds = cache_seconds
         self.unknown_kid_cooldown_seconds = unknown_kid_cooldown_seconds
@@ -138,7 +160,13 @@ class OidcJwtVerifier:
                 await self._refresh()
             try:
                 claims = _decode_claims(
-                    token, self._jwks or {}, self.issuer, self.audience, self.required_scopes
+                    token,
+                    self._jwks or {},
+                    self.issuer,
+                    self.audience,
+                    self.required_scopes,
+                    provider=self.provider,
+                    allowed_client_ids=self.allowed_client_ids,
                 )
             except McpError:
                 # Unknown kid can indicate planned rotation. Refresh only for a new kid,
@@ -156,13 +184,23 @@ class OidcJwtVerifier:
                     self._negative_kids[kid] = now + self.unknown_kid_cooldown_seconds
                     return None
                 claims = _decode_claims(
-                    token, self._jwks or {}, self.issuer, self.audience, self.required_scopes
+                    token,
+                    self._jwks or {},
+                    self.issuer,
+                    self.audience,
+                    self.required_scopes,
+                    provider=self.provider,
+                    allowed_client_ids=self.allowed_client_ids,
                 )
             raw_scopes = claims.get("scope", claims.get("scp", ""))
             scopes = raw_scopes.split() if isinstance(raw_scopes, str) else list(raw_scopes)
             return AccessToken(
                 token=token,
-                client_id=str(claims.get("azp", claims["sub"])),
+                client_id=(
+                    claims["client_id"]
+                    if self.provider == "supabase"
+                    else str(claims.get("azp", claims["sub"]))
+                ),
                 subject=claims["sub"],
                 scopes=scopes,
                 expires_at=claims.get("exp"),

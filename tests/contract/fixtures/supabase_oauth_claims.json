@@ -1,0 +1,22 @@
+{
+  "mcp_oauth": {
+    "iss": "https://identity.example/auth/v1",
+    "aud": "https://mcp.example/mcp",
+    "sub": "facodi-user-a",
+    "client_id": "monynha-registered-client",
+    "role": "authenticated",
+    "scope": "openid email"
+  },
+  "facodi_session": {
+    "iss": "https://identity.example/auth/v1",
+    "aud": "authenticated",
+    "sub": "facodi-user-a",
+    "role": "authenticated"
+  },
+  "unknown_client": {
+    "iss": "https://identity.example/auth/v1",
+    "aud": "https://mcp.example/mcp",
+    "sub": "facodi-user-a",
+    "client_id": "unapproved-facodi-oauth-client"
+  }
+}

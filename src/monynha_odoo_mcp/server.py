@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import cast
+from typing import NoReturn, cast
 from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
@@ -17,6 +17,7 @@ from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
+from monynha_odoo_mcp.audit.models import AuditEvent
 from monynha_odoo_mcp.audit.store import AuditStore
 from monynha_odoo_mcp.auth.oidc import OidcJwtVerifier
 from monynha_odoo_mcp.auth.principal import Principal
@@ -73,16 +74,19 @@ def create_http_app(
         calls_per_window=settings.calls_per_minute,
         max_concurrent=settings.max_concurrent_per_connection,
     )
+    required_scopes = {"mcp:odoo"} if settings.oauth_provider == "generic" else set()
     oidc_verifier = OidcJwtVerifier(
         issuer=oidc_issuer,
         audience=settings.oidc_audience,
         jwks_url=str(settings.oidc_jwks_url),
-        required_scopes={"mcp:odoo"},
+        required_scopes=required_scopes,
+        provider=settings.oauth_provider,
+        allowed_client_ids=frozenset(settings.oauth_allowed_client_ids),
     )
     auth = AuthSettings(
         issuer_url=cast(AnyHttpUrl, oidc_issuer),
         resource_server_url=cast(AnyHttpUrl, str(settings.public_url)),
-        required_scopes=["mcp:odoo"],
+        required_scopes=sorted(required_scopes),
         validate_token_resource=True,
     )
     mcp = MCPServer(
@@ -96,7 +100,37 @@ def create_http_app(
         token = get_access_token()
         if token is None or not token.subject:
             raise McpError("access_denied", "MCP authentication is required")
-        registry = SqlConnectionStore(sessions).load_registry()
+        store = SqlConnectionStore(sessions)
+        principal = Principal(token.subject)
+        if settings.oauth_provider == "supabase":
+
+            def deny_oauth_access(reason: str) -> NoReturn:
+                # Audit denial without storing the external subject, email or token.
+                try:
+                    AuditStore(sessions).append(
+                        AuditEvent(
+                            principal_id="external:unbound",
+                            connection_id="oauth",
+                            operation="oauth_authorize",
+                            outcome="denied",
+                            details={"status": reason, "client_id": token.client_id},
+                        )
+                    )
+                except Exception:
+                    pass
+                raise McpError("access_denied", "Monynha OAuth access is unavailable")
+
+            if (
+                not token.client_id
+                or token.client_id not in settings.oauth_allowed_client_ids
+                or not store.is_oauth_client_admitted(token.client_id)
+            ):
+                deny_oauth_access("client_not_admitted")
+            external_principal = store.resolve_external_principal(oidc_issuer, token.subject)
+            if external_principal is None:
+                deny_oauth_access("identity_not_onboarded")
+            principal = external_principal
+        registry = store.load_registry()
         return OdooToolService(
             adapter
             or Json2Adapter(
@@ -106,10 +140,12 @@ def create_http_app(
                 max_response_bytes=settings.max_response_bytes,
             ),
             registry,
-            Principal(token.subject),
+            principal,
             max_results=settings.max_results,
             audit=AuditStore(sessions),
             rate_limiter=rate_limiter,
+            writes_enabled=settings.writes_enabled,
+            oauth_client_id=token.client_id if settings.oauth_provider == "supabase" else None,
         )
 
     register_tools(mcp, scoped_service)
@@ -146,6 +182,10 @@ def create_http_app(
         try:
             with sessions() as session:
                 session.execute(text("SELECT 1 FROM organizations LIMIT 1"))
+                if settings.oauth_provider == "supabase":
+                    # Fail readiness if a deployment skipped the OAuth Alembic migrations.
+                    session.execute(text("SELECT 1 FROM external_identities LIMIT 1"))
+                    session.execute(text("SELECT 1 FROM oauth_client_admissions LIMIT 1"))
             return JSONResponse({"ready": True})
         except Exception:
             return JSONResponse({"ready": False}, status_code=503)
@@ -209,6 +249,7 @@ def build_stdio_server(settings: Settings) -> MCPServer:
             principal,
             max_results=settings.max_results,
             rate_limiter=limiter,
+            writes_enabled=settings.writes_enabled,
         ),
     )
     mcp._odoo_client = client  # type: ignore[attr-defined]
